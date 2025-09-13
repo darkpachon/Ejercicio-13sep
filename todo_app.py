@@ -1,157 +1,193 @@
-import sqlite3
-import tkinter as tk
-from tkinter import messagebox, ttk
+#!/usr/bin/env python3
+"""
+To-Do List con SQLite y tkinter
+Cumple con: agregar, listar, editar, eliminar, marcar como completada.
+"""
 
-class TodoApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Sistema de Gestión de Tareas")
-        self.root.geometry("600x400")
-        
-        # Conectar a la base de datos
-        self.conn = sqlite3.connect('tasks.db')
-        self.create_table()
-        
-        # Interfaz gráfica
+import sqlite3
+import datetime
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog
+
+DB_FILE = "tasks.db"
+
+# ---------------------------
+# Base de datos
+# ---------------------------
+def get_conn():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pendiente','completada')) DEFAULT 'pendiente',
+            created_at TEXT NOT NULL,
+            updated_at TEXT
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+def add_task(title: str):
+    now = datetime.datetime.utcnow().isoformat()
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO tasks (title, status, created_at) VALUES (?, 'pendiente', ?)",
+        (title.strip(), now)
+    )
+    conn.commit()
+    conn.close()
+
+def edit_task(task_id: int, new_title: str):
+    now = datetime.datetime.utcnow().isoformat()
+    conn = get_conn()
+    conn.execute(
+        "UPDATE tasks SET title = ?, updated_at = ? WHERE id = ?",
+        (new_title.strip(), now, task_id)
+    )
+    conn.commit()
+    conn.close()
+
+def delete_task(task_id: int):
+    conn = get_conn()
+    conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+
+def mark_completed(task_id: int):
+    now = datetime.datetime.utcnow().isoformat()
+    conn = get_conn()
+    conn.execute(
+        "UPDATE tasks SET status = 'completada', updated_at = ? WHERE id = ?",
+        (now, task_id)
+    )
+    conn.commit()
+    conn.close()
+
+def get_all_tasks():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, title, status, created_at, updated_at FROM tasks ORDER BY id"
+    ).fetchall()
+    conn.close()
+    return rows
+
+# ---------------------------
+# Interfaz gráfica
+# ---------------------------
+class TodoApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("To-Do List - SQLite")
+        self.geometry("700x420")
+        self.resizable(False, False)
         self.create_widgets()
-        
-        # Cargar tareas
-        self.load_tasks()
-        
-    def create_table(self):
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS tasks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pendiente'
-            )
-        ''')
-        self.conn.commit()
-    
+        self.refresh_tasks()
+
     def create_widgets(self):
-        # Frame para entrada de nueva tarea
-        input_frame = ttk.Frame(self.root, padding="10")
-        input_frame.grid(row=0, column=0, sticky=(tk.W, tk.E))
-        
-        ttk.Label(input_frame, text="Nueva tarea:").grid(row=0, column=0, sticky=tk.W)
-        self.task_entry = ttk.Entry(input_frame, width=40)
-        self.task_entry.grid(row=0, column=1, padx=5)
-        
-        add_button = ttk.Button(input_frame, text="Agregar", command=self.add_task)
-        add_button.grid(row=0, column=2, padx=5)
-        
-        # Frame para la lista de tareas
-        list_frame = ttk.Frame(self.root, padding="10")
-        list_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        # Treeview para mostrar las tareas
-        columns = ('id', 'title', 'status')
-        self.tree = ttk.Treeview(list_frame, columns=columns, show='headings')
-        
-        self.tree.heading('id', text='ID')
-        self.tree.heading('title', text='Tarea')
-        self.tree.heading('status', text='Estado')
-        
-        self.tree.column('id', width=50)
-        self.tree.column('title', width=300)
-        self.tree.column('status', width=100)
-        
-        self.tree.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
+        # Entrada y botón agregar
+        frame_top = ttk.Frame(self, padding=10)
+        frame_top.pack(fill=tk.X)
+        self.entry_title = ttk.Entry(frame_top)
+        self.entry_title.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        self.entry_title.bind("<Return>", lambda e: self.on_add())
+        ttk.Button(frame_top, text="Agregar tarea", command=self.on_add).pack(side=tk.LEFT)
+
+        # Tabla de tareas
+        columns = ("id", "title", "status", "created_at", "updated_at")
+        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=15)
+        for col, text, w in [
+            ("id", "ID", 40),
+            ("title", "Título", 300),
+            ("status", "Estado", 100),
+            ("created_at", "Creado", 130),
+            ("updated_at", "Actualizado", 130)
+        ]:
+            self.tree.heading(col, text=text)
+            self.tree.column(col, width=w, anchor=tk.CENTER if col in ("id", "status") else tk.W)
+        self.tree.pack(padx=10, pady=(5, 0))
+
         # Scrollbar
-        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscroll=scrollbar.set)
-        scrollbar.grid(row=0, column=3, sticky=(tk.N, tk.S))
-        
+        vsb = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        vsb.place(in_=self.tree, relx=1.0, rely=0, relheight=1.0, x=-2)
+
         # Botones de acción
-        button_frame = ttk.Frame(self.root, padding="10")
-        button_frame.grid(row=2, column=0, sticky=(tk.W, tk.E))
-        
-        complete_button = ttk.Button(button_frame, text="Marcar como Completada", command=self.complete_task)
-        complete_button.grid(row=0, column=0, padx=5)
-        
-        delete_button = ttk.Button(button_frame, text="Eliminar Tarea", command=self.delete_task)
-        delete_button.grid(row=0, column=1, padx=5)
-        
-        refresh_button = ttk.Button(button_frame, text="Actualizar Lista", command=self.load_tasks)
-        refresh_button.grid(row=0, column=2, padx=5)
-        
-        # Configurar expansión
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(1, weight=1)
-        list_frame.columnconfigure(0, weight=1)
-        list_frame.rowconfigure(0, weight=1)
-    
-    def add_task(self):
-        title = self.task_entry.get().strip()
+        frame_bot = ttk.Frame(self, padding=10)
+        frame_bot.pack(fill=tk.X, side=tk.BOTTOM)
+        ttk.Button(frame_bot, text="Editar", command=self.on_edit).pack(side=tk.LEFT, padx=5)
+        ttk.Button(frame_bot, text="Eliminar", command=self.on_delete).pack(side=tk.LEFT, padx=5)
+        ttk.Button(frame_bot, text="Marcar completada", command=self.on_complete).pack(side=tk.LEFT, padx=5)
+        ttk.Button(frame_bot, text="Refrescar", command=self.refresh_tasks).pack(side=tk.RIGHT)
+
+        self.tree.bind("<Double-1>", lambda e: self.on_edit())
+
+    def _selected_task_id(self):
+        sel = self.tree.selection()
+        if not sel:
+            return None
+        return self.tree.item(sel[0])["values"][0]
+
+    def on_add(self):
+        title = self.entry_title.get().strip()
         if not title:
-            messagebox.showwarning("Advertencia", "Por favor, ingresa el título de la tarea.")
+            messagebox.showwarning("Atención", "Escribe el título de la tarea.")
             return
-        
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute("INSERT INTO tasks (title, status) VALUES (?, 'pendiente')", (title,))
-            self.conn.commit()
-            self.task_entry.delete(0, tk.END)
-            self.load_tasks()
-            messagebox.showinfo("Éxito", "Tarea agregada correctamente.")
-        except Exception as e:
-            messagebox.showerror("Error", f"No se pudo agregar la tarea: {str(e)}")
-    
-    def load_tasks(self):
-        # Limpiar treeview
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute("SELECT id, title, status FROM tasks ORDER BY id")
-            for row in cursor.fetchall():
-                self.tree.insert('', tk.END, values=row)
-        except Exception as e:
-            messagebox.showerror("Error", f"No se pudieron cargar las tareas: {str(e)}")
-    
-    def complete_task(self):
-        selected_item = self.tree.selection()
-        if not selected_item:
-            messagebox.showwarning("Advertencia", "Por favor, selecciona una tarea.")
+        add_task(title)
+        self.entry_title.delete(0, tk.END)
+        self.refresh_tasks()
+
+    def on_edit(self):
+        task_id = self._selected_task_id()
+        if not task_id:
+            messagebox.showinfo("Editar", "Selecciona una tarea.")
             return
-        
-        item_id = self.tree.item(selected_item[0])['values'][0]
-        
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute("UPDATE tasks SET status = 'completada' WHERE id = ?", (item_id,))
-            self.conn.commit()
-            self.load_tasks()
-            messagebox.showinfo("Éxito", "Tarea marcada como completada.")
-        except Exception as e:
-            messagebox.showerror("Error", f"No se pudo actualizar la tarea: {str(e)}")
-    
-    def delete_task(self):
-        selected_item = self.tree.selection()
-        if not selected_item:
-            messagebox.showwarning("Advertencia", "Por favor, selecciona una tarea.")
+        current_title = next(r["title"] for r in get_all_tasks() if r["id"] == task_id)
+        new_title = simpledialog.askstring("Editar tarea", "Nuevo título:", initialvalue=current_title)
+        if new_title and new_title.strip():
+            edit_task(task_id, new_title)
+            self.refresh_tasks()
+
+    def on_delete(self):
+        task_id = self._selected_task_id()
+        if not task_id:
+            messagebox.showinfo("Eliminar", "Selecciona una tarea.")
             return
-        
-        if messagebox.askyesno("Confirmar", "¿Estás seguro de que quieres eliminar esta tarea?"):
-            item_id = self.tree.item(selected_item[0])['values'][0]
-            
-            try:
-                cursor = self.conn.cursor()
-                cursor.execute("DELETE FROM tasks WHERE id = ?", (item_id,))
-                self.conn.commit()
-                self.load_tasks()
-                messagebox.showinfo("Éxito", "Tarea eliminada correctamente.")
-            except Exception as e:
-                messagebox.showerror("Error", f"No se pudo eliminar la tarea: {str(e)}")
-    
-    def __del__(self):
-        if hasattr(self, 'conn'):
-            self.conn.close()
+        if messagebox.askyesno("Confirmar", "¿Eliminar la tarea seleccionada?"):
+            delete_task(task_id)
+            self.refresh_tasks()
+
+    def on_complete(self):
+        task_id = self._selected_task_id()
+        if not task_id:
+            messagebox.showinfo("Completar", "Selecciona una tarea.")
+            return
+        mark_completed(task_id)
+        self.refresh_tasks()
+
+    def refresh_tasks(self):
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        for r in get_all_tasks():
+            self.tree.insert("", tk.END, values=(
+                r["id"], r["title"], r["status"],
+                r["created_at"][:19],
+                r["updated_at"][:19] if r["updated_at"] else ""
+            ))
+
+# ---------------------------
+# Arranque
+# ---------------------------
+def main():
+    init_db()
+    app = TodoApp()
+    app.mainloop()
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = TodoApp(root)
-    root.mainloop()
+    main()
